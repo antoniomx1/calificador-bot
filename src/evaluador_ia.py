@@ -2,8 +2,12 @@ from google.genai import client
 from google.genai import types
 
 def evaluar_tarea(instrucciones: str, comentarios: str, tarea_alumno: str):
-    # Inicializa el cliente de Gemini (busca GEMINI_API_KEY en el entorno)
-    ai_client = client.Client()
+    # AQUÍ ESTÁ EL TRUCO: Le avisamos que use Vertex AI de forma nativa en tu proyecto
+    ai_client = client.Client(
+        vertexai=True, 
+        project="sentinela-mx", 
+        location="us-central1"
+    )
     
     system_instruction = f"""
     Eres un docente de nivel universitario experto en administración de organizaciones. 
