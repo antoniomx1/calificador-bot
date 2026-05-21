@@ -1,0 +1,9 @@
+# Entorno virtual local
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Credenciales y secretos
+.env
+*.json
