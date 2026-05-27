@@ -1,7 +1,6 @@
 import os
 import re
 import requests
-import threading # <-- NUEVO: Importamos threading para los procesos de fondo
 from flask import Flask, request, jsonify
 
 from config_gcp import obtener_rutas_actividad, leer_txt_bucket
@@ -26,36 +25,6 @@ def descargar_archivo_telegram(file_id):
         return res_bytes.content
     return None
 
-# --- NUEVO: Esta función se va a ejecutar "tras bambalinas" ---
-def procesar_entrega_fondo(chat_id, file_id, nombre_archivo, semana, modalidad, bloque):
-    enviar_mensaje_telegram(chat_id, "⏳ _Descargando archivo y jalando rúbricas de GCP..._")
-    try:
-        archivo_bytes = descargar_archivo_telegram(file_id)
-        if not archivo_bytes:
-            raise Exception("No se pudieron obtener los bytes de Telegram.")
-        
-        tarea_alumno = extraer_texto_archivo(archivo_bytes, nombre_archivo)
-        ruta_ins, ruta_com = obtener_rutas_actividad(semana, modalidad, bloque)
-        
-        if not ruta_ins or not ruta_com:
-            enviar_mensaje_telegram(chat_id, "❌ No encontré esa configuración en BigQuery.")
-            return
-        
-        instrucciones = leer_txt_bucket(ruta_ins)
-        comentarios = leer_txt_bucket(ruta_com)
-        
-        enviar_mensaje_telegram(chat_id, "🤖 _Evaluando con Gemini 2.5-Flash... Aguanta un piano..._")
-        retroalimentacion = evaluar_tarea(instrucciones, comentarios, tarea_alumno)
-        enviar_mensaje_telegram(chat_id, retroalimentacion)
-        
-    except Exception as e:
-        print(f"🚨 Error interno: {str(e)}")
-        mensaje_error = (
-            "⚠️ **Servicio Interrumpido** ⚠️\n\n"
-            "Los servidores andan saturados, caón. Aguanta unos minutos y vuelve a reenviar."
-        )
-        enviar_mensaje_telegram(chat_id, mensaje_error)
-
 @app.route('/webhook', methods=['POST'])
 def webhook():
     datos = request.get_json()
@@ -75,15 +44,39 @@ def webhook():
             bloque = match.group(2).upper()
             modalidad = match.group(3).strip()
             
-            # --- NUEVO: Lanzamos la chamba pesada al hilo secundario ---
-            hilo = threading.Thread(target=procesar_entrega_fondo, args=(chat_id, file_id, nombre_archivo, semana, modalidad, bloque))
-            hilo.start()
+            enviar_mensaje_telegram(chat_id, "⏳ _Descargando archivo y jalando rúbricas de GCP..._")
+            
+            try:
+                # Todo se ejecuta de frente. Como la IA ya es breve, acabamos en fa.
+                archivo_bytes = descargar_archivo_telegram(file_id)
+                if not archivo_bytes:
+                    raise Exception("No se pudieron obtener los bytes de Telegram.")
+                
+                tarea_alumno = extraer_texto_archivo(archivo_bytes, nombre_archivo)
+                ruta_ins, ruta_com = obtener_rutas_actividad(semana, modalidad, bloque)
+                
+                if not ruta_ins or not ruta_com:
+                    enviar_mensaje_telegram(chat_id, "❌ No encontré esa configuración en BigQuery.")
+                    return jsonify({"status": "error"}), 200
+                
+                instrucciones = leer_txt_bucket(ruta_ins)
+                comentarios = leer_txt_bucket(ruta_com)
+                
+                enviar_mensaje_telegram(chat_id, "🤖 _Evaluando con Gemini 2.5-Flash... Aguanta un piano..._")
+                
+                retroalimentacion = evaluar_tarea(instrucciones, comentarios, tarea_alumno)
+                enviar_mensaje_telegram(chat_id, retroalimentacion)
+                
+            except Exception as e:
+                print(f"🚨 Error interno: {str(e)}")
+                mensaje_error = "⚠️ **Servicio Interrumpido** ⚠️\n\nAndamos saturados. Aguanta unos minutos y vuelve a reenviar."
+                enviar_mensaje_telegram(chat_id, mensaje_error)
+                return jsonify({"status": "error_handled_ok"}), 200
             
         else:
             mensaje_ayuda = "👋 Mándame el archivo y en el *comentario* ponle:\n\n*Semana:* 2 | *Bloque:* A | *Modalidad:* Actividades Colaborativas"
             enviar_mensaje_telegram(chat_id, mensaje_ayuda)
             
-    # --- LA CLAVE: El servidor le contesta inmediatamente el 200 OK a Telegram ---
     return jsonify({"status": "ok"}), 200
 
 if __name__ == '__main__':
