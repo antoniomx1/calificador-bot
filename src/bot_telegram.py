@@ -61,7 +61,7 @@ def webhook():
                 if not archivo_bytes:
                     raise Exception("No se pudieron obtener los bytes de Telegram.")
                 
-                # 2. Extraemos el texto puro (.pdf o .docx)
+                # 2. Extraemos el texto puro (.pdf, .docx, .doc)
                 tarea_alumno = extraer_texto_archivo(archivo_bytes, nombre_archivo)
                 
                 # 3. Vamos a BigQuery por las rutas del bucket
@@ -83,10 +83,23 @@ def webhook():
                 enviar_mensaje_telegram(chat_id, retroalimentacion)
                 
             except Exception as e:
-                enviar_mensaje_telegram(chat_id, f"❌ Tronó el desmadre: {str(e)}")
+                # Mapeamos el error feo de la consola para avisarte de forma entendible
+                print(f"🚨 Error interno: {str(e)}")
+                
+                mensaje_error = (
+                    "⚠️ **Servicio Interrumpido por Google** ⚠️\n\n"
+                    "El servidor recibió la tarea, pero en este momento los servidores de "
+                    "Vertex AI están rechazando las peticiones por cuota o saturación regional.\n\n"
+                    "⏳ Aguanta unos 5 o 10 minutos y vuelve a reenviar el archivo, caón."
+                )
+                enviar_mensaje_telegram(chat_id, mensaje_error)
+                
+                # LA CLAVE: Aunque falle, le decimos a Telegram que ya manejamos la petición
+                # para que borre el mensaje de su cola y NO genere el bucle de spam.
+                return jsonify({"status": "error_handled_ok"}), 200
         else:
             mensaje_ayuda = (
-                "👋 ¡Qué tranza! Mándame el archivo (.pdf o .docx) y en el *comentario del archivo* ponle:\n\n"
+                "👋 ¡Qué tranza! Mándame el archivo (.pdf, .docx o .doc) y en el *comentario del archivo* ponle:\n\n"
                 "*Semana:* 2 | *Bloque:* A | *Modalidad:* Actividades Colaborativas"
             )
             enviar_mensaje_telegram(chat_id, mensaje_ayuda)
