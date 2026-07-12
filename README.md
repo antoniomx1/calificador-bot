@@ -1,4 +1,4 @@
-# Sentinela-MX: Calificador-Bot-Asincrono
+# Calificador-Bot-Asincrono
 
 Este repositorio contiene la arquitectura de datos y el código fuente de un sistema automatizado y asíncrono diseñado para la evaluación y retroalimentación de entregas académicas a nivel universitario. El sistema procesa documentos enviados por los usuarios a través de una interfaz de mensajería instantánea, consulta configuraciones dinámicas en Google Cloud Platform (GCP) y genera un desglose analítico estructurado utilizando Inteligencia Artificial Generativa.
 
