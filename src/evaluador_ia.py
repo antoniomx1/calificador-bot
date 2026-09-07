@@ -45,7 +45,7 @@ def evaluar_tarea(instrucciones: str, comentarios: str, tarea_alumno: str):
     user_content = f"Aquí está la entrega del alumno para que la evalúes:\n\n{tarea_alumno}"
     
     response = ai_client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-2.0-flash',
         contents=user_content,
         config=types.GenerateContentConfig(
             system_instruction=system_instruction,

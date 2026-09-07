@@ -10,6 +10,7 @@ from google.cloud import pubsub_v1  # El cliente para el bus de mensajes
 from config_gcp import obtener_rutas_actividad, leer_txt_bucket
 from evaluador_ia import evaluar_tarea
 from lector_archivos import extraer_texto_archivo
+from buscador_links import obtener_buscador, generar_mensaje_menu, normalizar_texto
 
 app = Flask(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -41,20 +42,24 @@ def descargar_archivo_telegram(file_id):
 @app.route('/webhook', methods=['POST'])
 def webhook():
     datos = request.get_json()
-    
-    if "message" in datos and "document" in datos["message"]:
-        chat_id = datos["message"]["chat"]["id"]
-        documento = datos["message"]["document"]
+    if not datos or "message" not in datos:
+        return jsonify({"status": "no_message"}), 200
+
+    mensaje = datos["message"]
+    chat_id = mensaje["chat"]["id"]
+
+    # --- CASO 1: EL DOCENTE MANDA UN ARCHIVO PARA CALIFICAR (PUB/SUB) ---
+    if "document" in mensaje:
+        documento = mensaje["document"]
         nombre_archivo = documento["file_name"]
         file_id = documento["file_id"]
-        texto_recibido = datos["message"].get("caption", "")
+        texto_recibido = mensaje.get("caption", "")
         
-        # Expresión regular para validar Semana, Bloque y Modalidad (fuente [source: 4])
+        # Expresión regular para validar Semana, Bloque y Modalidad
         patron = r"Semana:\s*(\d+)\s*\|\s*Bloque:\s*([A-Z])\s*\|\s*Modalidad:\s*([^|]+)"
         match = re.search(patron, texto_recibido, re.IGNORECASE)
         
         if match:
-            # 1. Empaquetamos los metadatos en un diccionario común y corriente
             paquete_datos = {
                 "chat_id": chat_id,
                 "file_id": file_id,
@@ -64,24 +69,37 @@ def webhook():
                 "modalidad": match.group(3).strip()
             }
             
-            # 2. Pub/Sub exige recibir bytes, así que transformamos el JSON
             datos_en_bytes = json.dumps(paquete_datos).encode("utf-8")
-            
-            # 3. Publicamos la comanda en el tópico en milisegundos
             print(f"--- Publicando tarea del chat {chat_id} en Pub/Sub... ---")
             futuro_envio = publicador_client.publish(TOPIC_PATH, datos_en_bytes)
-            futuro_envio.result()  # Confirma que GCP recibió el recado
+            futuro_envio.result()
             
-            # 4. Le avisamos inmediatamente al alumno para calmar ansias
             enviar_mensaje_telegram(chat_id, "📥 _¡Entrega recibida con éxito! Ya está en la fila. En un momento te llegará tu retroalimentación detallada..._")
-            
-            # 5. Cortamos la comunicación devolviendo HTTP 200 a Telegram. Evita duplicaciones.
             return jsonify({"status": "queued"}), 200
-            
         else:
-            mensaje_ayuda = "👋 Mándame el archivo y en el *comentario* ponle:\n\n*Semana:* 2 | *Bloque:* A | *Modalidad:* Actividades Colaborativas"
+            mensaje_ayuda = (
+                "👋 Mándame el archivo y en el *comentario* ponle:\n\n"
+                "`Semana: 2 | Bloque: A | Modalidad: Actividades Colaborativas`\n\n"
+                "_(O escribe *menu* para consultar opciones y enlaces)_"
+            )
             enviar_mensaje_telegram(chat_id, mensaje_ayuda)
-            
+            return jsonify({"status": "invalid_caption"}), 200
+
+    # --- CASO 2: EL DOCENTE ESCRIBE TEXTO (ASISTENTE DE LINKS Y MENÚ) ---
+    elif "text" in mensaje:
+        texto_usuario = mensaje["text"].strip()
+        t_norm = normalizar_texto(texto_usuario)
+
+        # Si saluda o pide el menú
+        if t_norm in ("/start", "start", "hola", "menu", "ayuda", "/help", "help", "buenos dias", "buenas tardes", "buenas noches"):
+            enviar_mensaje_telegram(chat_id, generar_mensaje_menu())
+        else:
+            # Consulta directa al buscador de enlaces
+            respuesta_links, _ = obtener_buscador().buscar(texto_usuario)
+            enviar_mensaje_telegram(chat_id, respuesta_links)
+
+        return jsonify({"status": "text_processed"}), 200
+
     return jsonify({"status": "ok"}), 200
 
 # =====================================================================
