@@ -2,6 +2,9 @@ import os
 import re
 import json
 import base64  # Para decodificar los mensajes que empuja Pub/Sub
+import logging
+import collections
+import threading
 from typing import Any
 import requests
 from flask import Flask, request, jsonify
@@ -14,11 +17,42 @@ from lector_archivos import extraer_texto_archivo
 from buscador_links import obtener_buscador, generar_mensaje_menu, normalizar_texto
 from generador_comunicados import obtener_generador
 
+logger = logging.getLogger("bot_telegram")
+logging.basicConfig(level=logging.INFO)
+
 app = Flask(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 # Estado conversacional en memoria para preguntas interactivas (chat_id -> dict)
 ESTADOS_USUARIO: dict[int, dict[str, Any]] = {}
+
+# Deduplicación de updates para evitar que los reintentos automáticos de Telegram procesen mensajes duplicados
+UPDATES_PROCESADOS: collections.deque = collections.deque(maxlen=1000)
+LOCK_UPDATES = threading.Lock()
+
+def extraer_datos_clase(texto: str, tema_default: str = "") -> tuple[str, str]:
+    """Extrae (horario, titulo) de la respuesta del usuario."""
+    texto = texto.strip()
+    lineas = [l.strip() for l in texto.splitlines() if l.strip()]
+    if len(lineas) >= 2:
+        horario = lineas[0]
+        titulo = " ".join(lineas[1:])
+    elif "|" in texto:
+        partes = texto.split("|", 1)
+        horario = partes[0].strip()
+        titulo = partes[1].strip()
+    elif " - " in texto:
+        partes = texto.split(" - ", 1)
+        horario = partes[0].strip()
+        titulo = partes[1].strip()
+    else:
+        horario = texto
+        titulo = ""
+
+    if not titulo:
+        titulo = tema_default
+
+    return horario, titulo
 
 # --- CONFIGURACIÓN DE GCP PUB/SUB ---
 # Inicializamos el cliente publicador
@@ -59,6 +93,15 @@ def webhook():
     datos = request.get_json()
     if not datos or "message" not in datos:
         return jsonify({"status": "no_message"}), 200
+
+    # Deduplicación para neutralizar reintentos de webhook automáticos de Telegram
+    update_id = datos.get("update_id")
+    if update_id is not None:
+        with LOCK_UPDATES:
+            if update_id in UPDATES_PROCESADOS:
+                logger.info(f"Update duplicado ignorado (reintento Telegram): {update_id}")
+                return jsonify({"status": "duplicate_ignored"}), 200
+            UPDATES_PROCESADOS.append(update_id)
 
     mensaje = datos["message"]
     chat_id = mensaje["chat"]["id"]
@@ -111,13 +154,13 @@ def webhook():
             semana = estado["semana"]
             bloque = estado["bloque"]
 
-            partes = re.split(r"\s*[-|]\s*", texto_usuario, maxsplit=1)
-            horario = partes[0].strip()
-            titulo = partes[1].strip() if len(partes) > 1 else None
+            generador = obtener_generador()
+            info_tema = generador.obtener_tema_semana(bloque, semana)
+            tema_default = info_tema.get("tema", "")
+            horario, titulo = extraer_datos_clase(texto_usuario, tema_default=tema_default)
 
             enviar_mensaje_telegram(chat_id, "⏳ _Generando invitación con Gemini y enlaces de Open Class... En unos segundos te llega el archivo._")
             try:
-                generador = obtener_generador()
                 invitacion = generador.generar_invitacion_clase(
                     bloque=bloque,
                     semana=semana,
@@ -127,10 +170,13 @@ def webhook():
                 nombre_doc = f"invitacion_clase_semana_{semana}_bloque_{bloque.lower()}.txt"
                 caption = (
                     f"🎥 *Invitación a Open Class Lista — Semana {semana} (Bloque {bloque})*\n\n"
-                    f"_Incluye introducción temática con IA y enlace directo al tablero._"
+                    f"_Sesión:_ {titulo}\n"
+                    f"_Horario:_ {horario}\n\n"
+                    f"_Descarga el archivo y comparte la invitación con tus alumnos._"
                 )
                 enviar_documento_telegram(chat_id, invitacion, nombre_doc, caption=caption)
             except Exception as e:
+                logger.error(f"Error generando invitación: {e}")
                 enviar_mensaje_telegram(chat_id, f"⚠️ Error al generar invitación: {e}")
             return jsonify({"status": "clase_generated"}), 200
 
@@ -173,12 +219,13 @@ def webhook():
                 resto = partes[1].strip()
 
             if resto:
-                partes_resto = re.split(r"\s*[-|]\s*", resto, maxsplit=1)
-                horario = partes_resto[0].strip()
-                titulo = partes_resto[1].strip() if len(partes_resto) > 1 else None
+                generador = obtener_generador()
+                info_tema = generador.obtener_tema_semana(bloque, semana)
+                tema_default = info_tema.get("tema", "")
+                horario, titulo = extraer_datos_clase(resto, tema_default=tema_default)
+
                 enviar_mensaje_telegram(chat_id, "⏳ _Generando invitación con Gemini y enlaces de Open Class..._")
                 try:
-                    generador = obtener_generador()
                     invitacion = generador.generar_invitacion_clase(
                         bloque=bloque,
                         semana=semana,
@@ -188,7 +235,9 @@ def webhook():
                     nombre_doc = f"invitacion_clase_semana_{semana}_bloque_{bloque.lower()}.txt"
                     caption = (
                         f"🎥 *Invitación a Open Class Lista — Semana {semana} (Bloque {bloque})*\n\n"
-                        f"_Incluye introducción temática generada con Gemini y enlace al aula._"
+                        f"_Sesión:_ {titulo}\n"
+                        f"_Horario:_ {horario}\n\n"
+                        f"_Descarga el archivo y comparte la invitación con tus alumnos._"
                     )
                     enviar_documento_telegram(chat_id, invitacion, nombre_doc, caption=caption)
                 except Exception as e:

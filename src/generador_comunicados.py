@@ -134,11 +134,11 @@ class GeneradorComunicados:
         patron_semana = re.compile(rf"\bsemana\s*{semana}\b", re.IGNORECASE)
 
         for act in actividades:
-            cat = act.get("Categoria", "")
-            desc = act.get("Actividad_Descriptiva", "")
-            orig = act.get("Nombre_Original", "")
-            sec = act.get("Semana_Seccion", "")
-            url = act.get("Link", "")
+            cat = act.get("Categoria", "").strip()
+            desc = act.get("Actividad_Descriptiva", "").strip()
+            orig = act.get("Nombre_Original", "").strip()
+            sec = act.get("Semana_Seccion", "").strip().lower()
+            url = act.get("Link", "").strip()
 
             # Open Class
             if cat == "Open Class" and url:
@@ -148,20 +148,39 @@ class GeneradorComunicados:
                 links["puntos_extras"] = url
 
             # Coincidencia con la semana
-            if patron_semana.search(desc) or patron_semana.search(orig):
-                if "modalidad de exámenes" in sec.lower() or cat == "Examen":
-                    if "segunda vuelta" not in desc.lower() and "ejecutiv" not in sec.lower():
-                        links["examen"] = url
-                if "modalidad de actividades" in sec.lower() or cat in ("Tarea", "Foro"):
-                    if "actividad" in desc.lower() or "semana" in desc.lower() or "foro" in desc.lower():
-                        links["actividad"] = url
-                        links["nombre_actividad"] = desc
-                if "modalidad de trabajo final" in sec.lower() or "trabajo final" in desc.lower():
+            es_esta_semana = (
+                orig.lower() == f"semana {semana}"
+                or bool(patron_semana.search(desc))
+            )
+
+            if es_esta_semana:
+                # 1. Modalidad de exámenes
+                if sec in ("modalidad de exámenes", "modalidad de examenes") and "segunda vuelta" not in desc.lower():
+                    links["examen"] = url
+                    links["nombre_examen"] = desc
+
+                # 2. Modalidad de actividades (ESTRICTO)
+                elif sec == "modalidad de actividades":
+                    links["actividad"] = url
+                    links["nombre_actividad"] = desc
+                    links["tipo_actividad"] = cat
+
+                # 3. Modalidad de trabajo final (ESTRICTO)
+                elif sec == "modalidad de trabajo final":
                     links["trabajo_final"] = url
-                if "modalidad ejecutiva" in sec.lower() or "ejecutiv" in desc.lower():
+                    links["nombre_trabajo_final"] = desc
+
+                # 4. Modalidad ejecutiva (ESTRICTO)
+                elif sec == "modalidad ejecutiva":
                     links["ejecutiva"] = url
-                if "competencias" in sec.lower():
+                    links["nombre_ejecutiva"] = desc
+                    links["tipo_ejecutiva"] = cat
+
+                # 5. Modalidad de evidencia por competencias (ESTRICTO)
+                elif sec == "modalidad de evidencia por competencias":
                     links["competencias"] = url
+                    links["nombre_competencias"] = desc
+                    links["tipo_competencias"] = cat
 
         return links
 
@@ -178,6 +197,8 @@ class GeneradorComunicados:
         examen_url = links["examen"] or f"https://aula101.utel.edu.mx/mod/quiz/index.php?id={curso_id}"
         actividad_url = links["actividad"] or f"https://aula101.utel.edu.mx/mod/assign/index.php?id={curso_id}"
         trabajo_final_url = links["trabajo_final"] or f"https://aula101.utel.edu.mx/mod/assign/index.php?id={curso_id}"
+        ejecutiva_url = links["ejecutiva"] or f"https://aula101.utel.edu.mx/mod/quiz/index.php?id={curso_id}"
+        competencias_url = links["competencias"] or f"https://aula101.utel.edu.mx/mod/assign/index.php?id={curso_id}"
 
         # 1. Determinar estación y banners según la semana
         if semana <= 3:
@@ -194,7 +215,7 @@ class GeneradorComunicados:
             banner_img = "https://i.pinimg.com/originals/2a/ae/5f/2aae5fe0781a4fc8b10a91ff7d48aaf0.png"
 
         # 2. Textos dinámicos de actividades
-        if semana in (1, 3, 5):
+        if links.get("tipo_actividad") == "Página Informativa" or "foro" in links.get("nombre_actividad", "").lower() or semana in (1, 3, 5):
             texto_actividad = f'<p><span style="font-family: verdana, arial, helvetica, sans-serif; font-size: small;"><a href="{actividad_url}" target="_blank">Participa en el Foro de Semana {semana}</a></span></p>'
         else:
             texto_actividad = f'<p><span style="font-family: verdana, arial, helvetica, sans-serif; font-size: small;"><a href="{actividad_url}" target="_blank">Realiza la Actividad de Semana {semana}</a></span></p>'
@@ -203,7 +224,20 @@ class GeneradorComunicados:
         
         avance_num = (semana // 2) if semana > 1 else 1
         texto_tf = f'<p><span style="font-family: verdana, arial, helvetica, sans-serif; font-size: small;"><a href="{trabajo_final_url}" target="_blank">Avance {avance_num} de Trabajo final [Clic aquí]</a></span></p>'
-        texto_ejec = f'<p><span style="font-size: small; font-family: verdana, arial, helvetica, sans-serif;"><a href="{examen_url}" target="_blank">Realiza tu examen de semana {semana}.</a></span></p>'
+
+        # Columna 4: Bloque A maneja Ejecutiva, Bloque D maneja Competencias
+        if bloque_u == "A":
+            col4_titulo = "Ejecutiva"
+            if "tarea" in (links.get("tipo_ejecutiva", "") + links.get("nombre_ejecutiva", "")).lower():
+                texto_col4 = f'<p><span style="font-size: small; font-family: verdana, arial, helvetica, sans-serif;"><a href="{ejecutiva_url}" target="_blank">Realiza tu tarea de semana {semana}.</a></span></p>'
+            else:
+                texto_col4 = f'<p><span style="font-size: small; font-family: verdana, arial, helvetica, sans-serif;"><a href="{ejecutiva_url}" target="_blank">Realiza tu examen de semana {semana}.</a></span></p>'
+        else:
+            col4_titulo = "Competencias"
+            if "foro" in (links.get("tipo_competencias", "") + links.get("nombre_competencias", "")).lower() or links.get("tipo_competencias") == "Página Informativa":
+                texto_col4 = f'<p><span style="font-size: small; font-family: verdana, arial, helvetica, sans-serif;"><a href="{competencias_url}" target="_blank">Revisa los contenidos semanales y participa en el Foro de Semana {semana}</a></span></p>'
+            else:
+                texto_col4 = f'<p><span style="font-size: small; font-family: verdana, arial, helvetica, sans-serif;"><a href="{competencias_url}" target="_blank">Realiza tu evidencia de semana {semana}.</a></span></p>'
 
         # 3. Ensamblado del HTML oficial
         html = f"""<table style="width: 665px; height: 1480px;" border="0" align="center">
@@ -241,7 +275,7 @@ class GeneradorComunicados:
 </td>
 <td style="text-align: center; border: 1px solid #06b706; width: 166.8px; height: 26.8px;"><span style="color: #339966;"><strong><span style="font-family: verdana, arial, helvetica, sans-serif; font-size: small;">Exámenes</span></strong></span></td>
 <td style="text-align: center; border: 1px solid #06b706; width: 178.825px; height: 26.8px;"><span style="color: #339966;"><strong><span style="font-family: verdana, arial, helvetica, sans-serif; font-size: small;">Trabajo Final</span></strong></span></td>
-<td style="text-align: center; border: 1px solid #06b706; width: 170.125px; height: 26.8px;"><span style="color: #339966;"><strong><span style="font-family: verdana, arial, helvetica, sans-serif; font-size: small;">Ejecutiva</span></strong></span></td>
+<td style="text-align: center; border: 1px solid #06b706; width: 170.125px; height: 26.8px;"><span style="color: #339966;"><strong><span style="font-family: verdana, arial, helvetica, sans-serif; font-size: small;">{col4_titulo}</span></strong></span></td>
 </tr>
 <tr style="height: 57.8px;">
 <td style="text-align: center; border: 1px solid #06b706; width: 142.85px; height: 57.8px;">
@@ -254,7 +288,7 @@ class GeneradorComunicados:
 {texto_tf}
 </td>
 <td style="text-align: center; border: 1px solid #06b706; width: 170.125px; height: 57.8px;">
-{texto_ejec}
+{texto_col4}
 </td>
 </tr>
 <tr style="height: 26.8px;">
@@ -399,7 +433,11 @@ REGLAS DE REDACCIÓN:
 4. NO incluyas saludo inicial (ej. 'Hola a todos') ni despedidas ni firmas, ya que esos bloques se añadirán automáticamente en la plantilla.
 """
         try:
-            res = ai_client.models.generate_content(model=model_name, contents=prompt)
+            res = ai_client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config={"max_output_tokens": 300, "temperature": 0.7},
+            )
             return res.text.strip()
         except Exception as e:
             logger.error(f"Error generando texto con Gemini: {e}")
@@ -435,12 +473,13 @@ Espero que se encuentren muy bien. Les doy una cordial bienvenida a nuestra sesi
 
 A continuación les comparto los detalles para que agenden nuestra clase:
 
-📌 Tema / Sesión: {titulo_final}
 🗓️ Fecha y Horario: {horario_clase}
-🎓 Materia: Principios y perspectivas de la administración (Bloque {bloque_u} - Semana {semana})
 
 🔗 Acceso a la Sesión (Tablero de Open Class):
 👉 {open_class_url}
+
+Ingresa al tablero y busca la clase con el título:
+📌 "{titulo_final}"
 
 (Ingresen al enlace anterior para consultar el aula virtual y unirse en el horario indicado).
 
