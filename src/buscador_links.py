@@ -240,5 +240,8 @@ def generar_mensaje_menu() -> str:
         "• `open class`\n"
         "• `calificador` _(tareas pendientes por evaluar)_\n"
         "• `extemporaneas`\n"
-        "• `puntos extra`"
+        "• `puntos extra`\n\n"
+        "3️⃣ *Generar comunicados semanales (.txt):*\n"
+        "• `comunicado semana 2 a` _(código oficial Moodle con enlaces)_\n"
+        "• `informacion de clase semana 2 a` _(invitación con choro pedagógico IA)_"
     )
