@@ -433,18 +433,32 @@ REGLAS DE REDACCIÓN:
 4. NO incluyas saludo inicial (ej. 'Hola a todos') ni despedidas ni firmas, ya que esos bloques se añadirán automáticamente en la plantilla.
 """
         try:
+            from google.genai import types
+            config = types.GenerateContentConfig(
+                temperature=0.7,
+                max_output_tokens=2048,
+            )
+            try:
+                config.thinking_config = types.ThinkingConfig(thinking_budget=0)
+            except Exception:
+                pass
+
             res = ai_client.models.generate_content(
                 model=model_name,
                 contents=prompt,
-                config={"max_output_tokens": 300, "temperature": 0.7},
+                config=config,
             )
-            return res.text.strip()
+            texto = res.text.strip() if res.text else ""
+            if len(texto) >= 50:
+                return texto
+            logger.warning(f"Texto de Gemini demasiado corto ({len(texto)} chars), aplicando texto de respaldo.")
         except Exception as e:
             logger.error(f"Error generando texto con Gemini: {e}")
-            return (
-                f"En esta semana {semana} abordaremos '{tema}'. "
-                f"Revisaremos puntos fundamentales como {comentarios}, analizando su impacto en las organizaciones actuales."
-            )
+
+        return (
+            f"En esta semana {semana} nos adentraremos en el tema de '{tema}'. "
+            f"Revisaremos puntos fundamentales como {comentarios}, analizando su impacto directo en el entorno laboral y directivo moderno."
+        )
 
     def generar_invitacion_clase(
         self,
