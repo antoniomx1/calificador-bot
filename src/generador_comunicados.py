@@ -76,8 +76,8 @@ class GeneradorComunicados:
             logger.error(f"Error al leer temario.xlsx: {e}")
 
     def _cargar_actividades(self) -> None:
-        """Carga los CSVs de actividades para bloques A (446) y D (411)."""
-        cursos_esperados = [(446, "a"), (411, "d")]
+        """Carga los CSVs de actividades para bloques A (446) y D (506)."""
+        cursos_esperados = [(446, "a"), (506, "d")]
         for curso_id, bloque_str in cursos_esperados:
             csv_path = self.data_dir / f"curso_{curso_id}_bloque_{bloque_str}_actividades.csv"
             if not csv_path.exists():
@@ -113,7 +113,7 @@ class GeneradorComunicados:
     def obtener_links_semana(self, bloque: str, semana: int) -> dict[str, Any]:
         """Obtiene todos los enlaces relevantes de Moodle para esa semana y bloque."""
         bloque_u = bloque.upper()
-        curso_id = 446 if bloque_u == "A" else 411
+        curso_id = 446 if bloque_u == "A" else 506
         actividades = self.actividades_por_curso.get(curso_id, [])
 
         links = {
