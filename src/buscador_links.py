@@ -35,7 +35,25 @@ class BuscadorCursos:
         self._cargar_actividades()
 
     def _cargar_actividades(self) -> None:
-        """Carga los CSVs desde la carpeta data/."""
+        """Carga los CSVs desde GCS (gs://calificador/cursos/cursos_consolidados.csv) o local."""
+        contenido = None
+        try:
+            from google.cloud import storage
+            client = storage.Client(project="sentinela-mx")
+            bucket = client.bucket("calificador")
+            blob = bucket.blob("cursos/cursos_consolidados.csv")
+            if blob.exists():
+                contenido = blob.download_as_text(encoding="utf-8-sig")
+                logger.info("Cargadas actividades directamente desde GCS (gs://calificador/cursos/cursos_consolidados.csv)")
+        except Exception as e:
+            logger.warning(f"No se pudo leer de GCS: {e}. Usando archivos locales.")
+
+        if contenido:
+            import io
+            reader = csv.DictReader(io.StringIO(contenido), delimiter=";")
+            self._procesar_filas(reader)
+            return
+
         rutas_a_cargar: list[Path] = []
         if self.csv_path.exists():
             rutas_a_cargar.append(self.csv_path)
@@ -50,24 +68,25 @@ class BuscadorCursos:
             try:
                 with open(ruta, "r", encoding="utf-8-sig") as f:
                     reader = csv.DictReader(f, delimiter=";")
-                    for row in reader:
-                        # Limpiar claves y valores
-                        clean_row = {k.strip(): (v.strip() if v else "") for k, v in row.items() if k}
-                        # Generar texto de búsqueda consolidado
-                        search_blob = " ".join([
-                            clean_row.get("Categoria", ""),
-                            clean_row.get("Actividad_Descriptiva", ""),
-                            clean_row.get("Nombre_Original", ""),
-                            clean_row.get("Semana_Seccion", ""),
-                            clean_row.get("Bloque", ""),
-                            f"bloque {clean_row.get('Bloque', '')}",
-                            clean_row.get("Nombre_Curso", ""),
-                            clean_row.get("Fecha", ""),
-                        ])
-                        clean_row["_norm_search"] = normalizar_texto(search_blob)
-                        self.actividades.append(clean_row)
+                    self._procesar_filas(reader)
             except Exception as e:
                 logger.error(f"Error al cargar {ruta}: {e}")
+
+    def _procesar_filas(self, reader: Any) -> None:
+        for row in reader:
+            clean_row = {k.strip(): (v.strip() if v else "") for k, v in row.items() if k}
+            search_blob = " ".join([
+                clean_row.get("Categoria", ""),
+                clean_row.get("Actividad_Descriptiva", ""),
+                clean_row.get("Nombre_Original", ""),
+                clean_row.get("Semana_Seccion", ""),
+                clean_row.get("Bloque", ""),
+                f"bloque {clean_row.get('Bloque', '')}",
+                clean_row.get("Nombre_Curso", ""),
+                clean_row.get("Fecha", ""),
+            ])
+            clean_row["_norm_search"] = normalizar_texto(search_blob)
+            self.actividades.append(clean_row)
 
         logger.info(f"Cargadas {len(self.actividades)} actividades en el buscador.")
 

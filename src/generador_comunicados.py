@@ -34,18 +34,37 @@ class GeneradorComunicados:
         self.data_dir = Path(data_dir) if data_dir else DATA_DIR
         self.temario: dict[tuple[str, int], dict[str, str]] = {}
         self.actividades_por_curso: dict[int, list[dict[str, str]]] = {}
+        self.bloque_a_curso_id: dict[str, int] = {}
 
         self._cargar_temario()
         self._cargar_actividades()
 
     def _cargar_temario(self) -> None:
-        """Lee 'temario.xlsx' y mapea (bloque, semana) -> {tema, comentarios}."""
-        if not self.temario_path.exists():
-            logger.warning(f"No se encontró el archivo de temario en: {self.temario_path}")
-            return
+        """Lee 'temario.xlsx' desde GCS o fallback local y mapea (bloque, semana) -> {tema, comentarios}."""
+        wb = None
+        try:
+            from google.cloud import storage
+            import io
+            client = storage.Client(project="sentinela-mx")
+            bucket = client.bucket("calificador")
+            blob = bucket.blob("cursos/temario.xlsx")
+            if blob.exists():
+                wb = openpyxl.load_workbook(io.BytesIO(blob.download_as_bytes()), data_only=True)
+                logger.info("Temario cargado exitosamente desde GCS (gs://calificador/cursos/temario.xlsx)")
+        except Exception as e:
+            logger.warning(f"No se pudo cargar temario de GCS ({e}). Usando archivo local.")
+
+        if wb is None:
+            if not self.temario_path.exists():
+                logger.warning(f"No se encontró el archivo de temario en: {self.temario_path}")
+                return
+            try:
+                wb = openpyxl.load_workbook(self.temario_path, data_only=True)
+            except Exception as e:
+                logger.error(f"Error al leer temario local {self.temario_path}: {e}")
+                return
 
         try:
-            wb = openpyxl.load_workbook(self.temario_path, data_only=True)
             ws = wb.active
             for row in ws.iter_rows(min_row=2, values_only=True):
                 if not row or not any(row):
@@ -73,31 +92,64 @@ class GeneradorComunicados:
                 }
             logger.info(f"Cargadas {len(self.temario)} semanas desde temario.xlsx.")
         except Exception as e:
-            logger.error(f"Error al leer temario.xlsx: {e}")
+            logger.error(f"Error al procesar temario: {e}")
 
     def _cargar_actividades(self) -> None:
-        """Carga los CSVs de actividades para bloques A (446) y D (506)."""
-        cursos_esperados = [(446, "a"), (506, "d")]
-        for curso_id, bloque_str in cursos_esperados:
-            csv_path = self.data_dir / f"curso_{curso_id}_bloque_{bloque_str}_actividades.csv"
-            if not csv_path.exists():
-                csv_path = self.data_dir / f"curso_{curso_id}_actividades.csv"
+        """Carga las actividades desde GCS (gs://calificador/cursos/cursos_consolidados.csv) o local."""
+        contenido_csv = None
+        try:
+            from google.cloud import storage
+            client = storage.Client(project="sentinela-mx")
+            bucket = client.bucket("calificador")
+            blob = bucket.blob("cursos/cursos_consolidados.csv")
+            if blob.exists():
+                contenido_csv = blob.download_as_text(encoding="utf-8-sig")
+                logger.info("Actividades cargadas exitosamente desde GCS (gs://calificador/cursos/cursos_consolidados.csv)")
+        except Exception as e:
+            logger.warning(f"No se pudo leer cursos_consolidados de GCS ({e}). Usando fallback local.")
 
-            if not csv_path.exists():
-                logger.warning(f"No se localizó el CSV para curso {curso_id} en {csv_path}")
-                continue
+        if contenido_csv:
+            import io
+            reader = csv.DictReader(io.StringIO(contenido_csv), delimiter=";")
+            self._procesar_filas_actividades(reader)
+            return
 
-            actividades = []
+        # Fallback local 1: consolidado
+        consolidado_local = self.data_dir / "cursos_consolidados.csv"
+        if consolidado_local.exists():
+            try:
+                with open(consolidado_local, "r", encoding="utf-8-sig") as f:
+                    self._procesar_filas_actividades(csv.DictReader(f, delimiter=";"))
+                return
+            except Exception as e:
+                logger.error(f"Error al leer consolidado local {consolidado_local}: {e}")
+
+        # Fallback local 2: individuales
+        for csv_path in self.data_dir.glob("curso_*_actividades.csv"):
             try:
                 with open(csv_path, "r", encoding="utf-8-sig") as f:
-                    reader = csv.DictReader(f, delimiter=";")
-                    for r in reader:
-                        clean = {k.strip(): (v.strip() if v else "") for k, v in r.items() if k}
-                        actividades.append(clean)
-                self.actividades_por_curso[curso_id] = actividades
-                logger.info(f"Cargadas {len(actividades)} actividades de curso {curso_id}.")
+                    self._procesar_filas_actividades(csv.DictReader(f, delimiter=";"))
             except Exception as e:
                 logger.error(f"Error al leer CSV {csv_path}: {e}")
+
+    def _procesar_filas_actividades(self, reader: Any) -> None:
+        for r in reader:
+            clean = {k.strip(): (v.strip() if v else "") for k, v in r.items() if k}
+            cid_str = clean.get("Curso_ID", "").strip()
+            bloque = clean.get("Bloque", "").strip().upper()
+            try:
+                cid = int(cid_str)
+            except ValueError:
+                continue
+
+            if cid not in self.actividades_por_curso:
+                self.actividades_por_curso[cid] = []
+            self.actividades_por_curso[cid].append(clean)
+
+            # Auto-detectar el curso más reciente por bloque (ej. 506 > 411, 550 > 446)
+            if bloque and cid:
+                if cid > self.bloque_a_curso_id.get(bloque, 0):
+                    self.bloque_a_curso_id[bloque] = cid
 
     def obtener_tema_semana(self, bloque: str, semana: int) -> dict[str, str]:
         """Recupera el tema y comentarios adicionales para una semana y bloque."""
@@ -113,7 +165,9 @@ class GeneradorComunicados:
     def obtener_links_semana(self, bloque: str, semana: int) -> dict[str, Any]:
         """Obtiene todos los enlaces relevantes de Moodle para esa semana y bloque."""
         bloque_u = bloque.upper()
-        curso_id = 446 if bloque_u == "A" else 506
+        # Selecciona el curso detectado dinámicamente según el CSV (GCS o local)
+        fallback_id = 446 if bloque_u == "A" else 506
+        curso_id = self.bloque_a_curso_id.get(bloque_u, fallback_id)
         actividades = self.actividades_por_curso.get(curso_id, [])
 
         links = {
